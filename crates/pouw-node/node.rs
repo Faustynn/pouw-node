@@ -625,7 +625,9 @@ fn on_gossip(
 /// - the id is indexed already: `Ignore`, the block is known or being fetched
 /// - the header passes the rules against its stored parent: it is stored, the block is
 ///   requested from the announcer with `GetBlocks`, and the verdict is `Accept` so the
-///   announcement is relayed
+///   announcement is relayed. When the parent has only its header (its body was lost
+///   with a failed request, or is still coming), header sync with the announcer starts
+///   too, so the download fetches the bodies below
 /// - the parent is not stored: `Ignore`, and header sync starts with a `GetHeaders` of
 ///   our locator to the announcer, which answers with the headers that connect
 /// - the header breaks a rule (height, target, timestamp, version): `Reject`, the
@@ -651,6 +653,20 @@ fn on_announce(
                 from,
                 *id,
             )?;
+            if !has_body(&state.store, &header.parent)? {
+                // The block will wait for its parent (`chain::side_branch`), and nothing
+                // else asks for a body that a failed request lost: without this the node
+                // stays at its tip while its peers go on (pouw-node#142). At most one
+                // `GetHeaders` to a peer is pending, so this costs one request.
+                sync::ask_headers(
+                    &state.network,
+                    &mut state.pending,
+                    &mut state.next_request,
+                    &state.store,
+                    &mut state.metrics,
+                    from,
+                )?;
+            }
             Ok(Acceptance::Accept)
         }
         HeaderOutcome::UnknownParent => {
@@ -669,6 +685,13 @@ fn on_announce(
             Ok(Acceptance::Reject)
         }
     }
+}
+
+/// Whether the block `id` has its body in the store.
+fn has_body(store: &Store, id: &BlockId) -> Result<bool, StoreError> {
+    let reader = store::read(store)?;
+    Ok(store::index(&reader, id)?
+        .is_some_and(|entry| entry.status.contains(store::schema::Status::BODY_STORED)))
 }
 
 /// Our [`Status`], read from the store.
