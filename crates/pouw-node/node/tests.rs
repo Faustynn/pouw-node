@@ -2811,6 +2811,90 @@ fn a_node_downloading_the_chain_survives_the_blocks_its_peer_mines_meanwhile() {
         same_blocks(&h, &theirs, &chain);
     }
 }
+
+/// The store of a node that stopped while it was fetching block 11: its chain is
+/// connected up to 10, block 11 has only its header, and block 12, announced meanwhile,
+/// has its body and waits for 11 (`chain::side_branch`). After the restart the download
+/// fetches 11 as well, below the stored 12, and the node reaches the tip of its peer
+/// (pouw-node#142). Before, the walk back from the peer's headers stopped at 12, 11 was
+/// never asked for, and the node stayed at 10.
+#[test]
+fn a_restarted_node_with_a_body_above_a_missing_one_reaches_the_tip() {
+    let mut h = harness();
+    let genesis = with_genesis(&mut h);
+    let mut chain = vec![genesis.clone()];
+    chain.extend(extend(&genesis, 40, 10));
+    for block in &chain[1..=10] {
+        let id = put(&mut h.state.store, block);
+        store::connect_block(&mut h.state.store, &id, &[], &StateDiff::default()).unwrap();
+    }
+    let header_only = &chain[11];
+    store::put_header(
+        &mut h.state.store,
+        &block_id(&header_only.header),
+        &header_only.header,
+    )
+    .unwrap();
+    // as `chain::receive_block` stores a block it cannot connect yet
+    let waiting = put(&mut h.state.store, &chain[12]);
+    store::mark_work_valid(&mut h.state.store, &waiting).unwrap();
+    assert_eq!(tip_height(&h), Some(Height(10)));
+
+    let theirs = their_store(&chain);
+    status_from_peer(&h, status_of_peer(&h, &theirs));
+    let (_, reported) = sync_with(&mut h, &theirs);
+
+    assert_eq!(reported, Vec::new());
+    assert_eq!(tip_height(&h), Some(Height(40)));
+    {
+        let reader = store::read(&h.state.store).unwrap();
+        assert_eq!(
+            store::canonical_id(&reader, Height(12)).unwrap(),
+            Some(waiting)
+        );
+    }
+    same_blocks(&h, &theirs, &chain);
+}
+
+/// A running node at 10 has the header of 11 but lost its body (the request failed), and
+/// its peer announces 12. The announce asks for 12 and, since its parent has no body, for
+/// headers too, so the download fetches 11. The next block the peer mines connects the
+/// waiting 12 as well (pouw-node#142). Before, nothing asked for 11 again and the node
+/// stayed at 10 while its peer went on.
+#[test]
+fn an_announce_above_a_parent_without_body_brings_the_missing_body() {
+    let mut h = harness();
+    let genesis = with_genesis(&mut h);
+    let mut chain = vec![genesis.clone()];
+    chain.extend(extend(&genesis, 13, 10));
+    for block in &chain[1..=10] {
+        let id = put(&mut h.state.store, block);
+        store::connect_block(&mut h.state.store, &id, &[], &StateDiff::default()).unwrap();
+    }
+    let lost = &chain[11];
+    store::put_header(&mut h.state.store, &block_id(&lost.header), &lost.header).unwrap();
+    let theirs = their_store(&chain[..=12]);
+
+    announce(&mut h, chain[12].header);
+    let (requests, reported) = sync_with(&mut h, &theirs);
+    assert!(
+        requests
+            .iter()
+            .any(|request| matches!(request, SyncRequest::GetHeaders(_))),
+        "{requests:?}"
+    );
+    assert_eq!(reported, Vec::new());
+    // 11 is connected, 12 has its body and waits for the next block
+    assert_eq!(tip_height(&h), Some(Height(11)));
+
+    let theirs = their_store(&chain);
+    announce(&mut h, chain[13].header);
+    let (_, reported) = sync_with(&mut h, &theirs);
+    assert_eq!(reported, Vec::new());
+    assert_eq!(tip_height(&h), Some(Height(13)));
+    same_blocks(&h, &theirs, &chain);
+}
+
 fn lottery_results(h: &Harness) -> Vec<pouw_api::event::LotteryResult> {
     h.state
         .events
