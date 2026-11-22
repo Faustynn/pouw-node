@@ -690,8 +690,9 @@ fn on_announce(
 /// Whether the block `id` has its body in the store.
 fn has_body(store: &Store, id: &BlockId) -> Result<bool, StoreError> {
     let reader = store::read(store)?;
-    Ok(store::index(&reader, id)?
-        .is_some_and(|entry| entry.status.contains(store::schema::Status::BODY_STORED)))
+    let held = store::index(&reader, id)?
+        .is_some_and(|entry| entry.status.contains(store::schema::Status::BODY_STORED));
+    Ok(held)
 }
 
 /// Our [`Status`], read from the store.
