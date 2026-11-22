@@ -66,8 +66,10 @@ pub struct Ibd {
 struct Source {
     /// The work of the peer's headers reached the threshold: its backlog is fetched.
     fetching: bool,
-    /// Ids whose body is not stored yet, ascending in height, each the child of the one
-    /// before (the first is the child of a block with a body).
+    /// Ids of blocks that are not on the canonical chain, ascending in height, each the
+    /// child of the one before (the first is the child of a connected block). An id whose
+    /// body is stored already, a block that waits for its ancestors, stays in the list
+    /// and is skipped when a window is taken (`next_ids`).
     backlog: VecDeque<BlockId>,
 }
 
@@ -211,15 +213,22 @@ fn follow(
     Ok(())
 }
 
-/// The ids from `tail` down to, not including, the first block with a stored body, in
+/// The ids from `tail` down to, not including, the first block on the canonical chain, in
 /// ascending order.
+///
+/// The walk stops at a connected block, not at the first block with a body: a block can
+/// have its body and still wait for ancestors that have only a header (a block announced
+/// while its parent was being fetched, see `chain::side_branch`). Such a block stays in
+/// the list, so the bodies below it are fetched too; stopping there left them out, and a
+/// node restarted with such a block in its store never reached the tip again
+/// (pouw-node#142).
 fn walk_back(store: &Store, tail: BlockId) -> Result<Vec<BlockId>, StoreError> {
     let reader = store::read(store)?;
     let mut ids = Vec::new();
     let mut current = tail;
     loop {
         let entry = store::index(&reader, &current)?.ok_or(StoreError::UnknownBlock(current))?;
-        if entry.status.contains(Status::BODY_STORED) {
+        if entry.status.contains(Status::CONNECTED) {
             break;
         }
         ids.push(current);

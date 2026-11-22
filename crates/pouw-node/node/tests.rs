@@ -2811,6 +2811,48 @@ fn a_node_downloading_the_chain_survives_the_blocks_its_peer_mines_meanwhile() {
         same_blocks(&h, &theirs, &chain);
     }
 }
+
+/// The store of a node that stopped while it was fetching block 11: its chain is
+/// connected up to 10, block 11 has only its header, and block 12, announced meanwhile,
+/// has its body and waits for 11 (`chain::side_branch`). After the restart the download
+/// fetches 11 as well, below the stored 12, and the node reaches the tip of its peer
+/// (pouw-node#142). Before, the walk back from the peer's headers stopped at 12, 11 was
+/// never asked for, and the node stayed at 10.
+#[test]
+fn a_restarted_node_with_a_body_above_a_missing_one_reaches_the_tip() {
+    let mut h = harness();
+    let genesis = with_genesis(&mut h);
+    let mut chain = vec![genesis.clone()];
+    chain.extend(extend(&genesis, 40, 10));
+    for block in &chain[1..=10] {
+        let id = put(&mut h.state.store, block);
+        store::connect_block(&mut h.state.store, &id, &[], &StateDiff::default()).unwrap();
+    }
+    let header_only = &chain[11];
+    store::put_header(
+        &mut h.state.store,
+        &block_id(&header_only.header),
+        &header_only.header,
+    )
+    .unwrap();
+    // as `chain::receive_block` stores a block it cannot connect yet
+    let waiting = put(&mut h.state.store, &chain[12]);
+    store::mark_work_valid(&mut h.state.store, &waiting).unwrap();
+    assert_eq!(tip_height(&h), Some(Height(10)));
+
+    let theirs = their_store(&chain);
+    status_from_peer(&h, status_of_peer(&h, &theirs));
+    let (_, reported) = sync_with(&mut h, &theirs);
+
+    assert_eq!(reported, Vec::new());
+    assert_eq!(tip_height(&h), Some(Height(40)));
+    {
+        let reader = store::read(&h.state.store).unwrap();
+        assert_eq!(store::canonical_id(&reader, Height(12)).unwrap(), Some(waiting));
+    }
+    same_blocks(&h, &theirs, &chain);
+}
+
 fn lottery_results(h: &Harness) -> Vec<pouw_api::event::LotteryResult> {
     h.state
         .events
