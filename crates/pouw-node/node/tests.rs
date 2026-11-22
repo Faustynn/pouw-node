@@ -2872,12 +2872,7 @@ fn an_announce_above_a_parent_without_body_brings_the_missing_body() {
         store::connect_block(&mut h.state.store, &id, &[], &StateDiff::default()).unwrap();
     }
     let lost = &chain[11];
-    store::put_header(
-        &mut h.state.store,
-        &block_id(&lost.header),
-        &lost.header,
-    )
-    .unwrap();
+    store::put_header(&mut h.state.store, &block_id(&lost.header), &lost.header).unwrap();
     let theirs = their_store(&chain[..=12]);
 
     announce(&mut h, chain[12].header);
