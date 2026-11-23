@@ -11,6 +11,7 @@ use std::{
     io,
     process::ExitCode,
     thread,
+    time::SystemTime,
 };
 
 use pouw_api::event::{EVENT_RETENTION, EventKind, NodeStarted};
@@ -150,7 +151,7 @@ fn start(config: NodeConfig, spec: &ChainSpec, genesis: &Block) -> Result<(), St
             node_id: config.node_id.clone(),
             retention: usize::try_from(EVENT_RETENTION).unwrap_or(usize::MAX),
             events: VecDeque::new(),
-            last_seq: 0,
+            last_seq: events::seq_base(SystemTime::now()),
         },
         metrics: Metrics::default(),
         network,
