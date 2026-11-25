@@ -665,3 +665,26 @@ fn an_event_poll_that_finds_nothing_ends_with_the_empty_page_after_wait_ms() {
     assert!(took < Duration::from_secs(3), "waited {took:?}");
     assert!(calls.load(Ordering::SeqCst) >= 2);
 }
+
+#[test]
+fn the_build_info_names_the_commit_branch_and_build_time_of_the_image() {
+    let info = build_info(|name| match name {
+        "GIT_COMMIT" => Some("0123456789abcdef".to_owned()),
+        "GIT_BRANCH" => Some("feature/x".to_owned()),
+        "BUILD_TIME" => Some(String::new()),
+        _ => None,
+    });
+    assert_eq!(info["service"], "pouw-node");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(info["commit"], "0123456789abcdef");
+    assert_eq!(info["branch"], "feature/x");
+    // set but empty (a build without the build arg) is unknown as well
+    assert_eq!(info["build_time"], "unknown");
+}
+
+#[test]
+fn manage_info_answers_json_of_this_service() {
+    let Json(info) = block_on(manage_info());
+    assert_eq!(info["service"], "pouw-node");
+    assert!(info["commit"].is_string());
+}

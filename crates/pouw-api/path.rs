@@ -30,5 +30,7 @@ pub const EVENTS: &str = "/v1/events";
 pub const NODE: &str = "/v1/node";
 /// `GET` liveness, served on the API port.
 pub const HEALTH: &str = "/health";
+/// `GET` what runs here: version, commit, branch and build time of the image, on the API port.
+pub const MANAGE_INFO: &str = "/manage/info";
 /// `GET` Prometheus text, served on the metrics port.
 pub const METRICS: &str = "/metrics";

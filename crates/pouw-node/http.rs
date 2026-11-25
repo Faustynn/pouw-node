@@ -363,6 +363,28 @@ async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
+/// `GET /manage/info`: what runs here. The image has `GIT_COMMIT`, `GIT_BRANCH` and
+/// `BUILD_TIME` from its build args (pouw-deploy `make images`, docker.yml); a binary
+/// built outside an image answers `unknown` for them.
+async fn manage_info() -> Json<Value> {
+    Json(build_info(|name| std::env::var(name).ok()))
+}
+
+fn build_info(var: impl Fn(&str) -> Option<String>) -> Value {
+    let field = |name: &str| {
+        var(name)
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "unknown".to_owned())
+    };
+    json!({
+        "service": "pouw-node",
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": field("GIT_COMMIT"),
+        "branch": field("GIT_BRANCH"),
+        "build_time": field("BUILD_TIME"),
+    })
+}
+
 async fn metrics(State(app): State<App>) -> Response {
     let (reply, answer) = oneshot::channel();
     if let Err(refused) = submit(&app.api, ApiRequest::Metrics { reply }) {
@@ -1061,6 +1083,7 @@ pub(crate) async fn post_tx(api: mpsc::Sender<ApiRequest>, body: Bytes) -> (Stat
 fn api_router(app: App) -> Router {
     Router::new()
         .route(path::HEALTH, get(health))
+        .route(path::MANAGE_INFO, get(manage_info))
         .route(path::NODE, get(node_info))
         .route(path::HEAD, get(head))
         .route(path::BLOCKS, get(blocks))
