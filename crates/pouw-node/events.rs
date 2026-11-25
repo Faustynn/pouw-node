@@ -3,7 +3,10 @@
 //! pages of them to `GET /v1/events`. A log that has used every sequence number is a
 //! fault of the node, returned as [`SeqExhausted`].
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use pouw_api::event::{Event, EventKind, EventTime, MAX_LIMIT, NodeId};
 use serde::Serialize;
@@ -32,14 +35,33 @@ pub struct EventsSlice<'a> {
     pub next: u64,
 }
 
-/// An event log in memory that keeps the last `retention` events. Its numbering
-/// restarts with the process.
+/// An event log in memory that keeps the last `retention` events. The events are lost
+/// with the process; the numbering is not reset: a node starts its log at
+/// [`seq_base`], above every `seq` an earlier run of it gave.
 #[derive(Debug)]
 pub struct EventLog {
     pub node_id: NodeId,
     pub retention: usize,
     pub events: VecDeque<Event>,
     pub last_seq: u64,
+}
+
+/// The `last_seq` a log starts with when the node starts at `now`: the microseconds since
+/// the Unix epoch, about 1.8e15 in 2026 and below 2^53 until the 23rd century, so the
+/// number stays exact in JSON for JavaScript too.
+///
+/// An earlier run of the node, with the same store or after its data was wiped, used
+/// fewer numbers than microseconds passed, so every `seq` of this run is above every
+/// `seq` of an earlier one. An indexer that kept the cursor of an earlier run gets
+/// `cursor_expired` (HTTP 410) with the first event of this run, records the events lost
+/// with the restart as a gap and continues. Starting at 0 instead left it waiting for
+/// numbers above its cursor that a restarted node would give only after as many events
+/// again (pouw-node#142, the staging indexer missed every event after a deploy).
+pub fn seq_base(now: SystemTime) -> u64 {
+    let Ok(since) = now.duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Events with `seq` above `after`, at most `limit` and at most [`MAX_LIMIT`].
@@ -79,6 +101,8 @@ pub fn emit(log: &mut EventLog, kind: EventKind) -> Result<(), SeqExhausted> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use pouw_api::event::Peer;
 
     use super::*;
@@ -116,6 +140,41 @@ mod tests {
         let back: pouw_api::event::EventsPage = serde_json::from_value(json).unwrap();
         assert_eq!(back.events.len(), 3);
         assert_eq!(back.next, 3);
+    }
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH.checked_add(Duration::from_secs(secs)).unwrap()
+    }
+
+    #[test]
+    fn a_restarted_log_numbers_above_the_earlier_run_and_an_old_cursor_expires() {
+        let mut first = log(10);
+        first.last_seq = seq_base(at(1_795_000_000));
+        for n in 0..1000 {
+            emit(&mut first, peer(n)).unwrap();
+        }
+        let cursor = first.last_seq;
+
+        // the node restarts a second later; its log starts empty
+        let mut second = log(10);
+        second.last_seq = seq_base(at(1_795_000_001));
+        emit(&mut second, peer(0)).unwrap();
+        let oldest = second.last_seq;
+        assert!(oldest > cursor);
+        assert_eq!(
+            page(&second, cursor, 10),
+            Err(CursorExpired { oldest_seq: oldest })
+        );
+        let before_oldest = oldest.checked_sub(1).unwrap();
+        assert_eq!(page(&second, before_oldest, 10).unwrap().events.len(), 1);
+    }
+
+    #[test]
+    fn the_seq_base_is_zero_before_the_epoch_and_exact_in_json_for_long() {
+        let before = UNIX_EPOCH.checked_sub(Duration::from_secs(1)).unwrap();
+        assert_eq!(seq_base(before), 0);
+        // 2200-01-01, still below 2^53
+        assert!(seq_base(at(7_258_118_400)) < 9_007_199_254_740_992);
     }
 
     #[test]
